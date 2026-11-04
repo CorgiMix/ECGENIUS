@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# PyCharm (keep shared settings out of the repo; per-user files change constantly)
+.idea/
+
+# ML artifacts / data (ECG datasets and checkpoints are usually too large for git)
+data/
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# Secrets
+.env
+*.key
+results/
