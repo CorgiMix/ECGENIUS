@@ -11,6 +11,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_DIR / ".env", override=True)
 
 PTBXL_DIR = Path(os.environ.get("PTBXL_DIR", "C:/data/ptb-xl"))
+MIMIC_ECG_DIR = Path(os.environ.get("MIMIC_ECG_DIR", "/Users/meleaohayon/data/mimic-iv-ecg"))
 CACHE_DIR = Path(os.environ.get("ECG_CACHE_DIR", "C:/data/ecg-guardian-cache"))
 RESULTS_DIR = PROJECT_DIR / "results"
 

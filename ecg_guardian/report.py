@@ -103,7 +103,8 @@ def write_html(out_dir: Path, table: pd.DataFrame, report: dict, examples: list[
         f"<div class='ex'><b>ECG {e['ecg_id']}</b> - truth: {'AF' if e['af'] else 'not AF'} - "
         f"Gemini: {e['gemini']['af_percent']}% AF, <i>{html.escape(e['gemini']['action'])}</i><br>"
         f"{html.escape(e['gemini']['summary'])}</div>" for e in examples)
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><title>ECG Guardian - run on folds {report.get("folds", "9")}</title>
+    dataset = report.get("dataset") or f"PTB-XL folds {report.get('folds', '9')}"
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><title>ECG Guardian - {html.escape(dataset)}</title>
 <style>
 body{{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f9f9f7;color:#0b0b0b;max-width:1000px;margin:2rem auto;padding:0 1rem}}
 h1{{font-size:1.5rem}} h2{{font-size:1.15rem;margin-top:2rem}} img{{max-width:100%;background:#fcfcfb;border:1px solid rgba(11,11,11,.1);border-radius:8px}}
@@ -112,9 +113,9 @@ h1{{font-size:1.5rem}} h2{{font-size:1.15rem;margin-top:2rem}} img{{max-width:10
 .ex{{background:#fcfcfb;border:1px solid rgba(11,11,11,.1);border-radius:8px;padding:.7rem;margin:.5rem 0;font-size:.9rem}}
 .meta{{color:#52514e;font-size:.9rem}}
 </style></head><body>
-<h1>ECG Guardian - PTB-XL folds {report.get("folds", "9")}</h1>
+<h1>ECG Guardian - {html.escape(dataset)}</h1>
 <p class="meta">{report['n_records']} ECGs, {report['n_af']} AF ({100 * report['n_af'] / report['n_records']:.1f}%). Nothing trained: Jev ({', '.join(report['jev_models'])}) and Gemini ({report.get('gemini_model', 'n/a')}) are zero-shot.
-Cut-offs tuned by 5-fold cross-validation within these records; error flagging uses each arm's own call at 0.5. Fold 10 untouched unless this is the final run. Total time {report['total_s'] / 60:.1f} min; Jev cost ${report['jev_cost_usd']:.2f}.</p>
+Cut-offs tuned by 5-fold cross-validation within these records; error flagging uses each arm's own call at 0.5.{" " + report["note"] if "note" in report else " Fold 10 untouched unless this is the final run."} Total time {report['total_s'] / 60:.1f} min; Jev cost ${report['jev_cost_usd']:.2f}.</p>
 <h2>1. AF detection</h2><img src="auroc.png" alt="AUROC per arm with confidence intervals">
 <h2>2. Flagging its own errors for review</h2><img src="review.png" alt="Errors caught vs share of ECGs reviewed">
 <h2>3. Sensitivity vs specificity</h2><img src="sens_spec.png" alt="Sensitivity vs specificity per arm">
