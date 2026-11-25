@@ -1,6 +1,6 @@
 # ECG Guardian
 
-**Team:** Dan Benezra, Lauren Albandak, Melea Ohayon
+**Team:** Dan Ben-Ezra, Lauren Albandak, Melea Ohayon
 
 ## Our question
 
