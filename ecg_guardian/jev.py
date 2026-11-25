@@ -19,7 +19,7 @@ from typesafe_sdk import AsyncTypeSafeClient, Choice, Noul
 from .config import JEV_MODEL
 
 QUESTIONS_VERSION = "v2-jev-predicts"
-EVIDENCE_VERSION = "v3-pwave-pattern-whole-record"
+EVIDENCE_VERSION = "v5-pwave-detrended-underlying-rhythm"
 
 # ---------------- buckets (fixed in code, before looking at fold 10) ----------------
 
@@ -45,10 +45,12 @@ def bucket_noise(n_bad: int) -> str:
 
 
 def bucket_p_waves(c: float) -> str:
-    """Cut-offs from fold-1 training data: sinus median 0.95, AF median 0.71."""
+    """Detrended consistency (features.p_wave_consistency). Cut-offs from PTB-XL folds 1-8 (MIMIC never
+    looked at): >= 0.7 holds 94% of non-AF and 2.6% of AF; < 0.4 holds 85% of AF and 1.5% of non-AF.
+    The middle bucket is called 'unclear', not 'mostly consistent', which read as evidence against AF."""
     if c is None or math.isnan(c):
         return "cannot assess"
-    return "consistent P waves" if c >= 0.90 else "mostly consistent P waves" if c >= 0.75 else "inconsistent or absent P waves"
+    return "consistent P waves" if c >= 0.7 else "unclear P waves" if c >= 0.4 else "inconsistent or absent P waves"
 
 
 def bucket_pattern(explained: float) -> str:
@@ -62,9 +64,22 @@ def bucket_pattern(explained: float) -> str:
     return "irregularly irregular (no pattern)"
 
 
+def bucket_underlying(cv: float) -> str:
+    """Regularity of the rhythm left after removing early-beat pairs (features.underlying_rhythm_cv).
+    Cut-offs from PTB-XL folds 1-8 irregular records (MIMIC never looked at): below 0.06 only 1.4% of
+    AF vs 43% of records with extra beats; at 0.12 and above 87.5% of AF vs 27-39% of non-AF."""
+    if cv is None or math.isnan(cv):
+        return "cannot assess"
+    if cv < 0.06:
+        return "regular underlying rhythm with occasional early beats"
+    if cv < 0.12:
+        return "underlying rhythm somewhat irregular"
+    return "no regular underlying rhythm (irregularly irregular)"
+
+
 def window_state(window: str, rhythm: dict, bad_leads: list[str], p_consistency: float | None = None,
                  pattern: float | None = None) -> dict:
-    """p_consistency / pattern are whole-record values (a 5-s window has too few beats to judge
+    """pattern = features.underlying_rhythm_cv. p_consistency / pattern are whole-record values (a 5-s window has too few beats to judge
     them); they are attached to every window in the 'extra evidence' (+pwave) variant only."""
     state = {
         "window": window,
@@ -74,7 +89,7 @@ def window_state(window: str, rhythm: dict, bad_leads: list[str], p_consistency:
     if p_consistency is not None:
         state["p_waves"] = bucket_p_waves(p_consistency)
     if pattern is not None and state["rhythm_regularity"] in ("irregular", "slightly irregular"):
-        state["irregularity_pattern"] = bucket_pattern(pattern)
+        state["underlying_rhythm"] = bucket_underlying(pattern)
     state["noise"] = bucket_noise(len(bad_leads))
     state["bad_leads"] = ", ".join(bad_leads) if bad_leads else "none"
     return state
@@ -103,16 +118,16 @@ AF_CRITERIA = {
 
 
 RHYTHM_OPTIONS_P = {
-    "af": "Irregular rhythm that is 'irregularly irregular (no pattern)', or irregular with inconsistent or "
-          "absent P waves, in a signal clean enough to trust.",
-    "not_af": "Regular rhythm, or irregularity explained by early beats with pauses, or irregular rhythm with "
+    "af": "Irregular rhythm with 'no regular underlying rhythm (irregularly irregular)', or irregular with "
+          "inconsistent or absent P waves, in a signal clean enough to trust.",
+    "not_af": "Regular rhythm, or a 'regular underlying rhythm with occasional early beats', or irregular rhythm with "
               "consistent P waves, in a usable signal.",
     "cant_tell": "Too few beats to judge, or noise is high.",
 }
 AF_CRITERIA_P = {
-    "true": "irregular rhythm that is irregularly irregular (no pattern) or lacks consistent P waves, and noise "
+    "true": "irregular rhythm with no regular underlying rhythm (irregularly irregular) or lacking consistent P waves, and noise "
             "is not high there",
-    "false": "regular rhythm, or irregularity explained by early beats with pauses, or consistent P waves before "
+    "false": "regular rhythm, or a regular underlying rhythm with occasional early beats, or consistent P waves before "
              "the beats, or irregularity only where noise is high",
 }
 

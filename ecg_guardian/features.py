@@ -10,7 +10,7 @@ avoids filter edge effects inside short windows.
 """
 
 import numpy as np
-from scipy.signal import butter, filtfilt, find_peaks, sosfiltfilt
+from scipy.signal import butter, detrend, filtfilt, find_peaks, sosfiltfilt
 
 from .config import FS_HI, FS_LO, QUALITY_STEP, QUALITY_WIN, RHYTHM_STEP, RHYTHM_WIN
 from .segment import to_samples, windows
@@ -92,6 +92,32 @@ def early_beat_explained(peaks: np.ndarray, start: float = 0.0, end: float = 10.
     return float((used & off).sum() / off.sum())
 
 
+def underlying_rhythm_cv(peaks: np.ndarray, start: float = 0.0, end: float = 10.0) -> float:
+    """Regularity (CV) of the underlying rhythm once early-beat pairs are removed. NaN if < 4 intervals.
+
+    Replaces early_beat_explained() in the AF pipeline. That score asked "are the off-rate intervals
+    short-long pairs?", but in AF random short-long pairs occur by chance: on PTB-XL folds 1-8, 34% of
+    irregular AF records were called (partly) explained by early beats. The textbook rule is that early
+    beats sit ON a regular underlying rhythm; AF has none. So: drop the short+long pairs (same pairing
+    rule as early_beat_explained) and measure how regular the remaining intervals are.
+    Folds 1-8, irregular records: AUROC 0.82 for AF vs non-AF (early_beat_explained: 0.67).
+    """
+    t = peaks / FS_LO
+    rr = np.diff(t[(t >= start) & (t < end)])
+    if len(rr) < 4:
+        return float("nan")
+    med = np.median(rr)
+    used = np.zeros(len(rr), bool)
+    for i in range(len(rr) - 1):
+        if (not used[i] and rr[i] < 0.85 * med and rr[i + 1] > 1.1 * med
+                and abs(rr[i] + rr[i + 1] - 2 * med) <= 0.2 * med):
+            used[i] = used[i + 1] = True
+    rest = rr[~used]
+    if len(rest) < 3:
+        return float("nan")
+    return float(rest.std() / rest.mean())
+
+
 def early_beat_shape(x_hi: np.ndarray, peaks_lo: np.ndarray) -> tuple[int, float]:
     """(number of early beats, lowest shape similarity of an early beat to the normal-beat template).
 
@@ -136,22 +162,27 @@ def rhythm_features(x_lo: np.ndarray) -> list[dict]:
 
 _SOS_P = butter(2, [1, 15], btype="band", fs=FS_HI, output="sos")
 P_LEADS = (1, 6)                     # II and V1: where P waves (and AF f-waves) show best
-P_START, P_END = 0.25, 0.08          # seconds before the R peak
+P_START, P_END = 0.22, 0.10          # seconds before the R peak (clear of the QRS onset)
 
 
 def p_wave_consistency(x_hi: np.ndarray, peaks_lo: np.ndarray, start: float = 0.0, end: float = 10.0) -> float:
     """How alike the pre-beat segments are across beats (0..1). High = consistent P waves.
 
-    For each beat whose pre-beat segment lies inside [start, end), take R-250 ms .. R-80 ms in leads
-    II and V1, correlate it with the median template, and average. NaN if fewer than 3 usable beats.
+    For each beat whose pre-beat segment lies inside [start, end), take R-220 ms .. R-100 ms in leads
+    II and V1, remove each segment's linear trend per lead, correlate it with the median template, and
+    average. NaN if fewer than 3 usable beats.
+
+    The per-beat detrend matters: without it, baseline drift and the tail of the previous T wave look
+    alike from beat to beat even in AF, so AF scored "mostly consistent". PTB-XL folds 1-8, irregular
+    records, AF vs non-AF: AUROC 0.82 without detrend (R-250..R-80 ms) -> 0.97 with it.
     """
     y = sosfiltfilt(_SOS_P, x_hi[:, list(P_LEADS)], axis=0)
     r = (peaks_lo * (FS_HI // FS_LO)).astype(int)
     a, b = int(P_START * FS_HI), int(P_END * FS_HI)
-    segs = [y[p - a:p - b].ravel() for p in r if p - a >= start * FS_HI and p <= end * FS_HI and p - a >= 0]
+    segs = [y[p - a:p - b] for p in r if p - a >= start * FS_HI and p <= end * FS_HI and p - a >= 0]
     if len(segs) < 3:
         return float("nan")
-    s = np.stack(segs)
+    s = detrend(np.stack(segs), axis=1).reshape(len(segs), -1)
     s = s - s.mean(axis=1, keepdims=True)
     tmpl = np.median(s, axis=0)
     denom = np.linalg.norm(s, axis=1) * np.linalg.norm(tmpl) + 1e-9

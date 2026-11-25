@@ -15,14 +15,15 @@ from pydantic import BaseModel, Field
 
 from .config import GEMINI_MODEL, LEADS
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 
 SYSTEM_ALONE = (
     "You read summaries of 10-second 12-lead ECGs and decide whether the ECG shows atrial "
     "fibrillation (AF). Features are pre-computed and bucketed: rhythm regularity, heart rate, "
-    "signal noise, which leads are bad and, when present, P-wave consistency and the irregularity "
-    "pattern. Irregular rhythm in a noisy window is weak evidence; consistent P waves, or irregularity "
-    "explained by early beats with pauses, argue against AF; 'irregularly irregular' argues for it. "
+    "signal noise, which leads are bad and, when present, P-wave consistency and the underlying "
+    "rhythm. Irregular rhythm in a noisy window is weak evidence; consistent P waves, or a regular "
+    "underlying rhythm with occasional early beats, argue against AF; 'no regular underlying rhythm "
+    "(irregularly irregular)' argues for it. "
     "Give the probability of AF and a 2-3 sentence summary for a clinician. Only mention windows, "
     "leads and findings that appear in the input."
 )

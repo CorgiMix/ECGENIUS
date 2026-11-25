@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ecg_guardian import gemini, jev, report  # noqa: E402
 from ecg_guardian.config import CACHE_DIR, GEMINI_MODEL, LEADS, RESULTS_DIR  # noqa: E402
 from ecg_guardian.features import (QUALITY_WINDOWS, RHYTHM_WINDOWS, bad_lead_mask,  # noqa: E402
-                                   early_beat_explained, p_wave_consistency, quality_features,
+                                   p_wave_consistency, underlying_rhythm_cv, quality_features,
                                    quality_windows_overlapping,
                                    r_peaks, rhythm_window_features)
 from ecg_guardian.labels import TRAIN_FOLDS, VAL_FOLD, add_af_label, load_metadata  # noqa: E402
@@ -65,6 +65,28 @@ def quality_thresholds(db: pd.DataFrame) -> dict:
     return thr
 
 
+def record_states(x: np.ndarray, x_hi: np.ndarray, thr: dict) -> dict:
+    """One record (100 Hz (1000, 12) + 500 Hz (5000, 12)) -> Jev states and numeric summaries.
+    Dataset-independent: takes signals and noise thresholds, not dataset-specific code."""
+    peaks = r_peaks(x)
+    bad = bad_lead_mask(quality_features(x_hi), thr)
+    def bad_leads(idx): return [LEADS[j] for j in range(12) if bad[idx, j].any()]
+    all_q = list(range(len(QUALITY_WINDOWS)))
+    rr = rhythm_window_features(peaks, 0, 10)
+    pw = p_wave_consistency(x_hi, peaks, 0, 10)       # whole record: windows have too few beats
+    pat = underlying_rhythm_cv(peaks, 0, 10)
+    wins = [(label(s, e), rhythm_window_features(peaks, s, e), bad_leads(quality_windows_overlapping(s, e)))
+            for s, e in RHYTHM_WINDOWS]
+    return {
+        "record": jev.record_state(jev.window_state("0-10 s", rr, bad_leads(all_q))),
+        "segments": jev.segments_state([jev.window_state(w, f, b) for w, f, b in wins]),
+        "record+pwave": jev.record_state(jev.window_state("0-10 s", rr, bad_leads(all_q), pw, pat)),
+        "segments+pwave": jev.segments_state([jev.window_state(w, f, b, pw, pat) for w, f, b in wins]),
+        "n_bad_lead_windows": int(bad.sum()),
+        "rr_irregularity": float(np.nan_to_num(max(rr["rr_cv"], rr["rr_rmssd_norm"]), nan=0.0)),
+    }
+
+
 def build_states(rows: pd.DataFrame, x_lo: np.ndarray, pos: np.ndarray, thr: dict, prog=None) -> dict:
     """Per record: states without and with P waves, plus numeric summaries for baselines."""
     out = {}
@@ -73,23 +95,7 @@ def build_states(rows: pd.DataFrame, x_lo: np.ndarray, pos: np.ndarray, thr: dic
         for sl in chunks:
             part = rows.iloc[sl]
             for (ecg_id, _), xi, x_hi in zip(part.iterrows(), pos[sl], load_hi(part)):
-                x = np.asarray(x_lo[xi]); peaks = r_peaks(x)
-                bad = bad_lead_mask(quality_features(x_hi), thr)
-                def bad_leads(idx): return [LEADS[j] for j in range(12) if bad[idx, j].any()]
-                all_q = list(range(len(QUALITY_WINDOWS)))
-                rr = rhythm_window_features(peaks, 0, 10)
-                pw = p_wave_consistency(x_hi, peaks, 0, 10)       # whole record: windows have too few beats
-                pat = early_beat_explained(peaks, 0, 10)
-                wins = [(label(s, e), rhythm_window_features(peaks, s, e), bad_leads(quality_windows_overlapping(s, e)))
-                        for s, e in RHYTHM_WINDOWS]
-                out[ecg_id] = {
-                    "record": jev.record_state(jev.window_state("0-10 s", rr, bad_leads(all_q))),
-                    "segments": jev.segments_state([jev.window_state(w, f, b) for w, f, b in wins]),
-                    "record+pwave": jev.record_state(jev.window_state("0-10 s", rr, bad_leads(all_q), pw, pat)),
-                    "segments+pwave": jev.segments_state([jev.window_state(w, f, b, pw, pat) for w, f, b in wins]),
-                    "n_bad_lead_windows": int(bad.sum()),
-                    "rr_irregularity": float(np.nan_to_num(max(rr["rr_cv"], rr["rr_rmssd_norm"]), nan=0.0)),
-                }
+                out[ecg_id] = record_states(np.asarray(x_lo[xi]), x_hi, thr)
                 bar.update(1)
                 if prog:
                     prog.advance("features")
@@ -173,11 +179,8 @@ def main():
     log(f"folds {args.folds}: {len(rows)} ECGs, {y.sum()} AF ({100 * y.mean():.1f}%) {'[AF-enriched sample]' if args.sample else '[real prevalence]'}")
 
     n = len(ids)
-    stage_names = (["features"] + [f"Jev {k}" for k in ["record", "record+pwave", "segments", "segments+pwave"]]
-                   + ([] if args.no_gemini else [f"Gemini {g}{v}" for v in ["", "+pwave"] for g in ["alone", "+jev", "+jev seg"]]))
-    n_arms = 7 if args.no_gemini else 13
     prog = RunProgress(f"folds {args.folds}" + (f" sample {n}" if args.sample else ""), n, int(y.sum()),
-                       [(s_, n) for s_ in stage_names] + [("scoring + CIs", n_arms)])
+                       progress_stages(n, args.no_gemini))
     try:
         _run(args, db, rows, ids, y, pos, x_lo, prog, t_all)
     except Exception as ex:
@@ -185,15 +188,28 @@ def main():
         raise
 
 
+def progress_stages(n: int, no_gemini: bool) -> list[tuple[str, int]]:
+    names = (["features"] + [f"Jev {k}" for k in ["record", "record+pwave", "segments", "segments+pwave"]]
+             + ([] if no_gemini else [f"Gemini {g}{v}" for v in ["", "+pwave"] for g in ["alone", "+jev", "+jev seg"]]))
+    return [(s_, n) for s_ in names] + [("scoring + CIs", 7 if no_gemini else 13)]
+
+
 def _run(args, db, rows, ids, y, pos, x_lo, prog, t_all):
     thr = quality_thresholds(db)
     prog.start("features")
     states = build_states(rows, x_lo, pos, thr, prog)
     prog.finish("features")
-    quality = np.array([states[i]["n_bad_lead_windows"] for i in ids], float)
-
     out_dir = RESULTS_DIR / (f"{args.tag}_sample" if args.sample else ("fold9_full" if args.folds == "9" else args.tag))
+    run_arms(args, ids, y, states, out_dir, prog, t_all,
+             {"folds": args.folds, "dataset": f"PTB-XL folds {args.folds}"})
+
+
+def run_arms(args, ids, y, states, out_dir: Path, prog, t_all, meta: dict):
+    """Ask Jev (and Gemini unless args.no_gemini), score every arm, write the report.
+    Dataset-independent: needs only ids, labels y (same order) and the states from record_states()."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    quality = np.array([states[i]["n_bad_lead_windows"] for i in ids], float)
+    af_of = dict(zip(ids, y))
 
     # --- Jev: 4 request sets (record/segments x without/with P waves)
     jev_res, t = {}, time.time()
@@ -264,7 +280,7 @@ def _run(args, db, rows, ids, y, pos, x_lo, prog, t_all):
                  ).to_csv(out_dir / "per_record.csv", index=False)
     table.to_csv(out_dir / "summary.csv")
     all_jev = [a for res in jev_res.values() for a in res.values()]
-    rep = {"folds": args.folds, "n_records": len(ids), "n_af": int(y.sum()), "jev_s": jev_s, "gemini_s": gemini_s, "total_s": time.time() - t_all,
+    rep = {**meta, "n_records": len(ids), "n_af": int(y.sum()), "jev_s": jev_s, "gemini_s": gemini_s, "total_s": time.time() - t_all,
            "jev_input_tokens": sum(a["input_tokens"] for a in all_jev),
            "jev_cost_usd": sum(a["input_tokens"] for a in all_jev) / 1e6 * JEV_PRICE_PER_M,
            "jev_models": sorted({a["model"] for a in all_jev}), "gemini_model": GEMINI_MODEL if gem else None}
@@ -277,8 +293,8 @@ def _run(args, db, rows, ids, y, pos, x_lo, prog, t_all):
                         n: sum(bool(gemini.unsupported_leads(res[i]["summary"], states[i]["segments" if "seg" in n else "record"])) for i in ids if i in res)
                         for n, res in gem.items()}})
         pipe = gem["gemini_jev_seg+pwave"]
-        pick = [i for i in ids if i in pipe and rows.af[i] == 1][:2] + [i for i in ids if i in pipe and rows.af[i] == 0][:1]
-        examples = [{"ecg_id": int(i), "af": int(rows.af[i]), "gemini": pipe[i]} for i in pick]
+        pick = [i for i in ids if i in pipe and af_of[i] == 1][:2] + [i for i in ids if i in pipe and af_of[i] == 0][:1]
+        examples = [{"ecg_id": int(i), "af": int(af_of[i]), "gemini": pipe[i]} for i in pick]
     (out_dir / "report.json").write_text(json.dumps(rep, indent=1))
     print("\n" + json.dumps(rep, indent=1))
 
