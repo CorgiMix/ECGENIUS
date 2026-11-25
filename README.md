@@ -4,7 +4,7 @@
 
 ## Our question
 
-**In PTB-XL, how does Jev, with no ECG training, compare with gradient boosting, a CNN trained from scratch, and the ECGFounder foundation model for detecting 17 common ECG abnormalities, and for which types of abnormality is each approach best?**
+**In PTB-XL, how does Jev, with no ECG training, compare with trained models for detecting 17 common ECG abnormalities, and where is each one best?**
 
 AI models usually need many ECGs to learn. We want to compare models that learned from very different amounts of data, from none (Jev) to millions of ECGs (ECGFounder), and see where each one works best.
 
