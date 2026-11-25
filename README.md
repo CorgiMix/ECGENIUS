@@ -34,7 +34,10 @@ We look at 17 common problems, like atrial fibrillation, bundle branch block and
 1. Our code measures the ECG (heart rate, is the rhythm regular, QRS width…).
 2. We write the measurements as words, like "irregular rhythm".
 3. Jev reads the words and gives a number from 0 to 1 for each problem (how likely it is). Jev never sees the right answer.
-4. We compare Jev to a model trained ECG-GPT.
+4. We compare Jev with:
+   - **XGBoost**, a model we will train on groups 1–8 with the same measurements. It will be our main comparison, because it will be tested on the same ECGs as Jev.
+   - **ECG-GPT**, a model trained on 2.9 million ECGs. We use its published results on PTB-XL, only as a reference, because we can't run it on our ECGs.
+   - **Simple rules**, textbook criteria written in code, with no AI and no training. For example: heart rate under 60 = slow heart rate; very irregular rhythm = atrial fibrillation; wide QRS = bundle branch block.
 5. We use AUROC to give a score.
 
 ## First results (group 9, 2,183 ECGs)
